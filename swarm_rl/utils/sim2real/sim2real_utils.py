@@ -117,14 +117,14 @@ if __name__ == '__main__':
     ####################################################################################################################
     # # LOAD SIM2REAL BASELINE POLICY WEIGHTS INTO PYTORCH MODEL
     sim2real_policy = GaussianMLP()
-    with open('weights.txt', 'r') as f:
+    with open('original_weights.txt', 'r') as f:
         lines = f.readlines()
         l0, l1, l2 = lines
         layer_0_weights = np.fromstring(l0, dtype=float, sep=',')
         layer_1_weights = np.fromstring(l1, dtype=float, sep=',')
         layer_2_weights = np.fromstring(l2, dtype=float, sep=',')
 
-    with open('biases.txt', 'r') as f:
+    with open('original_biases.txt', 'r') as f:
         lines = f.readlines()
         b0, b1, b2 = lines
         bias_0_weights = np.fromstring(b0, dtype=float, sep=',')
@@ -176,6 +176,7 @@ if __name__ == '__main__':
     vxyz_R_omega = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
 
     for pos in rel_pos:
+        # compare outputs of different models (c++ vs python, sample-factory vs sim2real, etc) for different inputs
         obs = torch.FloatTensor(pos + vxyz_R_omega).view(1, 18)
         obs_dict = {'obs': obs}
         SF_out = sf_policy.action_parameterization(sf_policy.actor_encoder(obs_dict))[1].means.detach().numpy()
