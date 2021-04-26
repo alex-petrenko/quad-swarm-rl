@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import json
 import os
+import subprocess
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -132,9 +133,9 @@ if __name__ == '__main__':
 
     with torch.no_grad():
         # PyTorch stores weights as (out_features, in_features) for whatever reason
-        sim2real_policy.layer_0.weight = torch.nn.Parameter(torch.from_numpy(layer_0_weights).float().view(64, 18))
-        sim2real_policy.layer_1.weight = torch.nn.Parameter(torch.from_numpy(layer_1_weights).float().view(64, 64))
-        sim2real_policy.layer_2.weight = torch.nn.Parameter(torch.from_numpy(layer_2_weights).float().view(4, 64))
+        sim2real_policy.layer_0.weight = torch.nn.Parameter(torch.from_numpy(layer_0_weights).float().view(18, 64).T)
+        sim2real_policy.layer_1.weight = torch.nn.Parameter(torch.from_numpy(layer_1_weights).float().view(64, 64).T)
+        sim2real_policy.layer_2.weight = torch.nn.Parameter(torch.from_numpy(layer_2_weights).float().view(64, 4).T)
 
         sim2real_policy.layer_0.bias = torch.nn.Parameter(torch.from_numpy(bias_0_weights).float().view(64,))
         sim2real_policy.layer_1.bias = torch.nn.Parameter(torch.from_numpy(bias_1_weights).float().view(64,))
@@ -142,21 +143,47 @@ if __name__ == '__main__':
     ####################################################################################################################
 
     ####################################################################################################################
-    # # SAVE SF POLICY WEIGHTS INTO A TEXT FILE
+    # # SAVE SF AND SIM2REAL POLICY WEIGHTS INTO A TEXT FILE (for testing correctness)
     model_path = '../../train_dir/quads_multi_one_drone_v112/one_drone_/03_one_drone_see_3333_non_tanh/checkpoint_p0/checkpoint_000976564_1000001536.pth'
     model_path = os.path.join(os.path.dirname(__file__), model_path)
     cfg_path = '../../train_dir/quads_multi_one_drone_v112/one_drone_/03_one_drone_see_3333_non_tanh/cfg.json'
     cfg_path = os.path.join(os.path.dirname(__file__), cfg_path)
     sf_policy = load_sf_model(model_path, cfg_path)
+    print(sf_policy)
     # save the weights of the sf policy for sim2real
-    generate_weights(sf_policy, transpose=True)
+    generate_weights(sf_policy, output_path="sf_model_weights.txt", transpose=True)
+    # save weights of sim2real policy
+    generate_weights(sim2real_policy, output_path="sim2real_model_weights.txt", transpose=True)
     ####################################################################################################################
 
     # test outputs of PyTorch model given a random observation that can be compared to the c* version of the model
-    obs = torch.rand(1, 18)
-    obs_dict = {'obs': obs}
+    # obs = torch.rand(1, 18)
+    # obs = torch.FloatTensor([0.165928, 0.942265, 0.683338, 0.476424, 0.175134, 0.393026, 0.37596, 0.173734, 0.937535, 0.15913, 0.967515, 0.620271, 0.406, 0.990523, 0.404797, 0.968619, 0.853021, 0.956329]).view(1, 18)
+    # obs = torch.FloatTensor([0, 0, -10, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]).view(1, 18)
+    # obs_dict = {'obs': obs}
 
     # compare outputs
-    print("Sample Factory policy output: ", sf_policy.action_parameterization(sf_policy.actor_encoder(obs_dict))[1].means)
-    print("Sim2real policy output: ", sim2real_policy(obs))
+    # print("Sample Factory policy output: ", sf_policy.action_parameterization(sf_policy.actor_encoder(obs_dict))[1].means)
+    # print("Sim2real policy output: ", sim2real_policy(obs))
 
+    rel_pos = [
+        [0, 0, 1], [0, 0, 2], [0, 0, -1], [0, 0, -2],  # strafe up/down
+        [1, 0, 0], [2, 0, 0], [-1, 0, 0], [-2, 0, 0],  # strafe forward/back
+        [0, 1, 0], [0, 2, 0], [0, -1, 0], [0, -2, 0],  # strafe left/right
+        [0, 0, 0]  # no movement
+    ]
+
+    vxyz_R_omega = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
+
+    for pos in rel_pos:
+        obs = torch.FloatTensor(pos + vxyz_R_omega).view(1, 18)
+        obs_dict = {'obs': obs}
+        SF_out = sf_policy.action_parameterization(sf_policy.actor_encoder(obs_dict))[1].means.detach().numpy()
+        sim2real_out = sim2real_policy(obs).detach().numpy()
+        # print(f'Relative Pos: {pos}, Sample Factory Output: {SF_out}, Sim2Real Output: {sim2real_out} \n')
+        print(f'Relative Pos: {pos}, Sample Factory Output: {SF_out} \n')
+
+    # Compare PyTorch SF model output to C++ SF Model output
+    output = subprocess.run(['/usr/bin/g++', 'sf_eval.cpp', './a.out'], stdout=subprocess.PIPE)
+    res = subprocess.call('./a.out')
+    print(res)
