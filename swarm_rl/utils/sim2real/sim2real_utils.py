@@ -12,6 +12,12 @@ from swarm_rl.train import register_custom_components
 from gym.spaces import Box
 from attrdict import AttrDict
 
+from code_blocks import (
+	headers_network_evaluate,
+	linear_activation,
+	sigmoid_activation,
+	relu_activation,
+)
 
 class GaussianMLP(nn.Module):
     def __init__(self):
@@ -43,6 +49,107 @@ class SFPolicy(nn.Module):
         return self.output_layer(self.encoder(x))
 
 
+def generate_c_model(model, output_path='network_evaluate.cpp'):
+
+    layer_names, bias_names, weights, biases, outputs = generate_weights(model, output_path, transpose=True)
+    num_layers = len(layer_names)
+
+    structure = 'static const int structure [' + str(int(num_layers)) + '][2] = {'
+    for name, param in model.named_parameters():
+        param = param.T
+        if 'weight' in name and 'critic' not in name:
+            structure += '{' + str(param.shape[0]) + ', ' + str(param.shape[1]) + '},'
+
+    # complete the structure array
+    # get rid of the comma after the last curly bracket
+    structure = structure[:-1]
+    structure += '};\n'
+
+    # write the for loops for forward-prop
+    for_loops = []
+    input_for_loop = f'''
+        for (int i = 0; i < structure[0][1]; i++) {{
+            output_0[i] = 0;
+            for (int j = 0; j < structure[0][0]; j++) {{
+                output_0[i] += state_array[j] * {layer_names[0]}[j][i];
+            }}
+            output_0[i] += {bias_names[0]}[i];
+            output_0[i] = tanhf(output_0[i]);
+        }}
+    '''
+    for_loops.append(input_for_loop)
+
+    # rest of the hidden layers
+    for n in range(1, num_layers - 1):
+        for_loop = f'''
+        for (int i = 0; i < structure[{str(n)}][1]; i++) {{
+            output_{str(n)}[i] = 0;
+            for (int j = 0; j < structure[{str(n)}][0]; j++) {{
+                output_{str(n)}[i] += output_{str(n - 1)}[j] * {layer_names[n]}[j][i];
+            }}
+            output_{str(n)}[i] += {bias_names[n]}[i];
+            output_{str(n)}[i] = tanhf(output_{str(n)}[i]);
+        }}
+        '''
+        for_loops.append(for_loop)
+
+    # the last hidden layer which is supposed to have no non-linearity
+    n = num_layers - 1
+    output_for_loop = f'''
+                for (int i = 0; i < structure[{str(n)}][1]; i++) {{
+                    output_{str(n)}[i] = 0;
+                    for (int j = 0; j < structure[{str(n)}][0]; j++) {{
+                        output_{str(n)}[i] += output_{str(n - 1)}[j] * {layer_names[n]}[j][i];
+                    }}
+                    output_{str(n)}[i] += {bias_names[n]}[i];
+                }}
+    '''
+    for_loops.append(output_for_loop)
+
+    # assign network outputs to control
+    assignment = """
+            control_n->thrust_0 = output_"""+str(n)+"""[0];
+            control_n->thrust_1 = output_"""+str(n)+"""[1];
+            control_n->thrust_2 = output_"""+str(n)+"""[2];
+            control_n->thrust_3 = output_"""+str(n)+"""[3];	
+    """
+
+    # construct the network evaluate function
+    controller_eval = """void networkEvaluate(struct control_t_n *control_n, const float *state_array) {"""
+    for code in for_loops:
+        controller_eval += code
+    # assignment to control_n
+    controller_eval += assignment
+
+    # closing bracket
+    controller_eval += """}"""
+
+    # combine all the codes
+    source = ""
+    # headers
+    source += headers_network_evaluate
+    # helper funcs
+    source += linear_activation
+    source += sigmoid_activation
+    source += relu_activation
+    # network eval func
+    source += structure
+    for output in outputs:
+        source += output
+    for weight in weights:
+        source += weight
+    for bias in biases:
+        source += bias
+    source += controller_eval
+
+    if output_path:
+        with open(output_path, 'w') as f:
+            f.write(source)
+        f.close()
+
+    return source
+
+
 def generate_weights(model, output_path='model_weights.txt', transpose=False):
     """
     Convert a pytorch model into the list of weights that sim2real can digest (see network_evaluate.c in sim2real)
@@ -53,11 +160,14 @@ def generate_weights(model, output_path='model_weights.txt', transpose=False):
     :return:
     """
     weights, biases = [], []
+    layer_names, bias_names, outputs = [], [], []
+    n_bias = 0
     for name, param in model.named_parameters():
         if transpose:
             param = param.T
         name = name.replace('.', '_')
-        if 'weight' in name:
+        if 'weight' in name and 'critic' not in name:
+            layer_names.append(name)
             weight = 'static const float ' + name + '[' + str(param.shape[0]) + '][' + str(param.shape[1]) + '] = {'
             for row in param:
                 weight += '{'
@@ -71,7 +181,8 @@ def generate_weights(model, output_path='model_weights.txt', transpose=False):
             weight += '};\n'
             weights.append(weight)
 
-        if 'bias' in name:
+        if 'bias' in name and 'critic' not in name:
+            bias_names.append(name)
             bias = 'static const float ' + name + '[' + str(param.shape[0]) + '] = {'
             for num in param:
                 bias += str(num.item()) + ','
@@ -79,16 +190,12 @@ def generate_weights(model, output_path='model_weights.txt', transpose=False):
             bias = bias[:-1]
             bias += '};\n'
             biases.append(bias)
+            output = 'static float output_' + str(n_bias) + '[' + str(param.shape[0]) + '];\n'
+            outputs.append(output)
+            n_bias += 1
 
-        # combine all the code
-        source = ''
-        for weight in weights:
-            source += weight
-        for bias in biases:
-            source += bias
 
-        with open(output_path, 'w') as f:
-            f.write(source)
+    return layer_names, bias_names, weights, biases, outputs
 
 
 def load_sf_model(model_path, cfg_path):
@@ -154,6 +261,7 @@ if __name__ == '__main__':
     generate_weights(sf_policy, output_path="sf_model_weights.txt", transpose=True)
     # save weights of sim2real policy
     generate_weights(sim2real_policy, output_path="sim2real_model_weights.txt", transpose=True)
+    generate_c_model(sf_policy, output_path="SF_network_evaluate_autogen.cpp")
     ####################################################################################################################
 
     # test outputs of PyTorch model given a random observation that can be compared to the c* version of the model
