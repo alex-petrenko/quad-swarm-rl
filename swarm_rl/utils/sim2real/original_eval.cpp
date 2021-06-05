@@ -34,7 +34,7 @@ float relu(float num) {
 		return 0;
 	}
 }
-
+//5.5k 19.2k bil
 static const int structure[3][2] = {{18, 64},{64, 64},{64, 4}};
 static float output_0[64];
 static float output_1[64];
