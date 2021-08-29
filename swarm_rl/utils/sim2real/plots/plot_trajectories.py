@@ -7,9 +7,9 @@ from mpl_toolkits.mplot3d import Axes3D
 
 
 if __name__ == '__main__':
-    cf_ids = [7, 10, 11, 12]
+    cf_ids = [17, 20, 33, 41]
     dfs = []
-    file = 'swap_goals/swap_goals_data.txt'
+    file = 'swap_voronoi/swap_voronoi.txt'
     cfs_data = []
     plot_together = False
     df = pd.read_csv(file)

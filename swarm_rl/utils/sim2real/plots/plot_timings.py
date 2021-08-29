@@ -5,7 +5,7 @@ matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 
 if __name__ == '__main__':
-    file = 'timings/timers2.txt' # about 14 seconds of data captured
+    file = 'timings/timers.txt' # about 14 seconds of data captured
     df = pd.read_csv(file)
     fig = plt.figure()
     ekf_start, ekf_end = df['field.values0'].values, df['field.values1'].values
